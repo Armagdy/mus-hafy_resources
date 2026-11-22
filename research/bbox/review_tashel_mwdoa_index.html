@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tashel + mwdoa bbox review</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#101418;color:#e8eaed;margin:0;padding:12px}
+h1{font-size:1.15rem;margin:8px 4px 2px}
+.sub{color:#9aa0a6;font-size:.85rem;margin:2px 4px 14px}
+.card{background:#1b2027;border-radius:12px;padding:10px 12px;margin:14px 0}
+.card.warn{border:2px solid #e37400}
+.card h2{font-size:1rem;margin:4px 0 2px;color:#8ab4f8}
+.card p{color:#bdc1c6;font-size:.8rem;margin:2px 0 8px}
+.card img{width:100%;height:auto;border-radius:8px;display:block}
+</style></head><body>
+<h1>tashel + mwdoa — ayah bounding-box review</h1>
+<div class="sub">tashel: classic-layout fit (604/604 pages, ~6 px). mwdoa: golden-medallion marker detection (584/604 pages). Each image loads separately — if one is slow, scroll on.</div>
+<div class="card"><h2>tashel — page 1</h2><p>Al-Fatiha page — tashel's page 1 is REAL content (unlike madinah).</p><img src="https://files.catbox.moe/yx3k54.webp" alt="tashel page 1" loading="lazy"></div><div class="card"><h2>tashel — page 2</h2><p>Baqarah start — residual ~6 px.</p><img src="https://files.catbox.moe/mi5k7y.webp" alt="tashel page 2" loading="lazy"></div><div class="card"><h2>tashel — page 3</h2><p>Full text page — index fit.</p><img src="https://files.catbox.moe/6vx584.webp" alt="tashel page 3" loading="lazy"></div><div class="card"><h2>tashel — page 106</h2><p>Surah-header page (4:176 lines 1-5, header at 6-7).</p><img src="https://files.catbox.moe/a3egxw.webp" alt="tashel page 106" loading="lazy"></div><div class="card"><h2>tashel — page 300</h2><p>Dense page — main validation page.</p><img src="https://files.catbox.moe/86dz5v.webp" alt="tashel page 300" loading="lazy"></div><div class="card warn"><h2>tashel — page 431</h2><p>The one page with a higher residual (32 px) — check extra carefully.</p><img src="https://files.catbox.moe/dmip2u.webp" alt="tashel page 431" loading="lazy"></div><div class="card"><h2>tashel — page 604</h2><p>Final page with three surahs.</p><img src="https://files.catbox.moe/mmoijn.webp" alt="tashel page 604" loading="lazy"></div><div class="card"><h2>mwdoa — page 2</h2><p>Baqarah start — 5 markers = 5 expected ends.</p><img src="https://files.catbox.moe/x31r5j.webp" alt="mwdoa page 2" loading="lazy"></div><div class="card"><h2>mwdoa — page 3</h2><p>Full page — 11 markers = 11 expected.</p><img src="https://files.catbox.moe/6jxzca.webp" alt="mwdoa page 3" loading="lazy"></div><div class="card"><h2>mwdoa — page 106</h2><p>Three ends only — 3 = 3.</p><img src="https://files.catbox.moe/xkliyo.webp" alt="mwdoa page 106" loading="lazy"></div><div class="card"><h2>mwdoa — page 113</h2><p>A RECOVERED page (faded markers, low-threshold retry) — check carefully.</p><img src="https://files.catbox.moe/z2sn2p.webp" alt="mwdoa page 113" loading="lazy"></div><div class="card"><h2>mwdoa — page 300</h2><p>Your confirmed marker page. Red ellipses = detected medallions; colored rects = ayah segments.</p><img src="https://files.catbox.moe/gd9ig7.webp" alt="mwdoa page 300" loading="lazy"></div><div class="card"><h2>mwdoa — page 604</h2><p>Last page, three surahs — 15 ends (16 raw, lowest-score pruned).</p><img src="https://files.catbox.moe/o2sjf7.webp" alt="mwdoa page 604" loading="lazy"></div>
+</body></html>
