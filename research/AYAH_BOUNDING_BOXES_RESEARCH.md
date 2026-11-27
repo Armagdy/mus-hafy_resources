@@ -412,6 +412,23 @@ Overlays for all 62 pass-2 pages + controls:
 `research/bbox/render_mwdoa_overlays.py` → `review_mwdoa_multiscale.html`
 (each colored rect should end exactly at its red medallion).
 
+**First-ayah head coverage (2026-11-27, user-reported pages 160/253).** The
+regenerated asset's first ayah was clipped on **77 pages** — all fresh
+mid-surah page starts: the first ayah's start band was estimated from its
+on-page word count (`WPL = 9` words per band), but the mwdoa print runs
+~6-9 words per band, so the estimate undercounted the line span and the
+highlight missed the top line(s) — three lines on page 205. A
+continuation/fresh check against the DB (the page's first ayah appearing
+on the previous page, or opening a surah) now decides directly: a
+continuation flows from the top band; a fresh mid-surah ayah's first line
+IS the top band (ink-density-guarded, so the ornamental Fatiha page stays
+on the estimate); only surah openings keep the word estimate — their
+ornamental header + basmalah sit above the first ayah's text. No ayah ever
+spans a page boundary in the classic DB (checked: 0 pages), so the
+page-bottom continuation branch never runs and the tail needed no change —
+the dense bottom "bands" on every page are the frame's decorative rule,
+not text.
+
 The `temp/bbox-research/mwdoa_*.py` probes document the dead ends (gray and
 color thresholds, isolation tests, self-similarity mining, fragment template
 matching — all failed because the marker is a large faded-gold diamond, not

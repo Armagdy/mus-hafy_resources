@@ -364,7 +364,11 @@ def db_page_data(con, page_no):
     cur.execute("SELECT DISTINCT sura_number, ayah_number FROM glyphs WHERE page_number=?",
                 (page_no + 1,))
     nxt = set(cur.fetchall())
-    return groups, nxt
+    # ayahs of the PREVIOUS page: tells whether this page starts mid-ayah
+    cur.execute("SELECT DISTINCT sura_number, ayah_number FROM glyphs WHERE page_number=?",
+                (page_no - 1,))
+    prev = set(cur.fetchall())
+    return groups, nxt, prev
 
 
 # ---------------- segment construction ----------------
@@ -439,7 +443,7 @@ def build_page(con, page_no, templates, emit_overlays=False):
     tmpl_one = next(tk for k, tk in templates if k == 1.0)
     ordered = to_ordered(detect_markers(gm, tmpl_one))
 
-    groups, nxt = db_page_data(con, page_no)
+    groups, nxt, prev = db_page_data(con, page_no)
     if not groups:
         return None, {"error": "no db data"}
     # ayahs on this page in reading order + their on-page WORD counts
@@ -450,6 +454,13 @@ def build_page(con, page_no, templates, emit_overlays=False):
         if (s, a_no) not in [p["k"] for p in page_ayahs]:
             page_ayahs.append({"k": (s, a_no), "cont": (s, a_no) in nxt})
     ending = [p for p in page_ayahs if not p["cont"]]
+
+    # page-head facts: does the page start mid-ayah, and does it open a
+    # surah (ornamental header + basmalah bands above the first ayah's
+    # text — the head/tail rules below need to know)?
+    first_key = page_ayahs[0]["k"] if page_ayahs else None
+    first_cont = bool(first_key) and first_key in prev
+    first_surah = bool(first_key) and first_key[1] == 1 and first_key[0] > 1
 
     info = {
         "markers": len(ordered),
@@ -511,22 +522,35 @@ def build_page(con, page_no, templates, emit_overlays=False):
         return None, info
 
     # ---- assign markers to ending ayahs (reading order) ----
-    # ordered[idx][3] holds the marker's TRUE left edge (x + pad).
-    # Boundary ayahs (page-top start / page-bottom continuation) get their
-    # line spans from the DB's on-page WORD counts (~9 words/line), so the
-    # segments never spill into the ornamental frame bands at the extremes.
+    # ordered[idx][3] holds the marker's TRUE left edge (x + k*pad).
+    # The page's FIRST ayah is positioned from the DB's page-boundary facts
+    # and the top band's ink, not from a word-count estimate: the old
+    # WPL=9-words-per-band estimate clipped the first line(s) on 77 pages
+    # (user-reported 160/253), because the print runs ~6-9 words per band.
+    # Text-band ink fraction (clipped text column): ornament/header bands
+    # sit outside this window (dense like the Fatiha page's, or near-empty
+    # like the pale surah-header bands).
+    TEXT_LO, TEXT_HI = 0.04, 0.35
     WPL = 9.0
     segs_by_ayah = {}
     for idx, ay in enumerate(ending):
         k_end, x_end = ordered[idx][0], ordered[idx][3]
         # this ayah's text sits to the RIGHT of its end marker (RTL)
         mark_edge = x_end + 2
-        # start boundary: previous marker (text resumes to ITS left); for the
-        # page's first ayah, estimate its start line from its word count.
+        # start boundary: previous marker (text resumes to ITS left). For
+        # the page's FIRST ayah the DB says what the page top holds: a
+        # continuation flows from the top band, and a fresh mid-surah
+        # ayah's first line IS the top band. Only surah openings (header +
+        # basmalah above the text) and ornament-topped pages (the Fatiha
+        # page) fall back to the word-count estimate.
         if idx == 0:
-            est = max(1, int(math.ceil(words_on_page.get(ay["k"], 9) / WPL)))
-            est = min(est, k_end + 1)
-            k_start = max(0, k_end - (est - 1))
+            head_d = band_ink_density(gray, bands[0], cx0, cx1)
+            if first_cont or (not first_surah and TEXT_LO <= head_d < TEXT_HI):
+                k_start = 0
+            else:
+                est = max(1, int(math.ceil(words_on_page.get(ay["k"], 9) / WPL)))
+                est = min(est, k_end + 1)
+                k_start = max(0, k_end - (est - 1))
             start_edge = cx1
         else:
             k_prev, x_prev = ordered[idx - 1][0], ordered[idx - 1][3]
@@ -542,7 +566,9 @@ def build_page(con, page_no, templates, emit_overlays=False):
         segs_by_ayah[ay["k"]] = segs
 
     # the continuing ayah (if any) spans after the last marker — bounded by
-    # its on-page word count so the footer/frame bands stay outside.
+    # its on-page word count so the footer/frame bands stay outside. (Dead
+    # branch with the classic DB: no ayah ever spans a page boundary, so
+    # `cont` is always empty here — kept for DBs that do split ayahs.)
     cont = [p for p in page_ayahs if p["cont"]]
     if cont:
         est = max(1, int(math.ceil(words_on_page.get(cont[0]["k"], 9) / WPL)))

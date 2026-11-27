@@ -18,29 +18,33 @@ PAGES_DIR = os.path.join(ROOT, "assets", "mushuf_mwdoa_images")
 NEW = json.load(open(os.path.join(CACHE, "mwdoa_ayah_bboxes.json"), encoding="utf-8"))
 by_page = {p["page"]: p for p in NEW["pages"]}
 
-# every page whose detection needed pass 2 (multi-scale sweep / gap fill)
-# plus the 20 that were previously flagged entirely — these are the pages
-# whose geometry differs from the reviewed asset and need eyeballing.
+# review set: every page whose detection needed pass 2 (multi-scale /
+# gap fill) + the 20 previously flagged + the first-ayah head-fix pages
+# (mwdoa_headfix_pages.json, written by the byte-diff validation).
 REVIEW_PAGES = sorted(p["page"] for p in NEW["pages"]
                      if p.get("info", {}).get("multiscale"))
 CONTROLS = [241, 243, 300]
 PREV_FLAGGED = [160, 233, 242, 253, 279, 292, 319, 339, 345, 368, 375, 384,
                 415, 426, 450, 466, 473, 496, 542, 601]
-for pg in PREV_FLAGGED:
+HEADFIX = []
+hf_path = os.path.join(CACHE, "mwdoa_headfix_pages.json")
+if os.path.exists(hf_path):
+    HEADFIX = json.load(open(hf_path, encoding="utf-8"))["pages"]
+for pg in PREV_FLAGGED + HEADFIX:
     if pg not in REVIEW_PAGES:
         REVIEW_PAGES.append(pg)
 REVIEW_PAGES.sort()
-print("review pages:", REVIEW_PAGES)
+print("review pages:", len(REVIEW_PAGES), "(multiscale + prev-flagged + head-fix:", len(HEADFIX), ")")
 
 
 def embed_overlay(pg):
     src = os.path.join(CACHE, "overlays", "mwdoa_p%04d.png" % pg)
     im = Image.open(src)
-    w = 900
+    w = 800
     h = int(im.height * w / im.width)
     im = im.resize((w, h), Image.LANCZOS)
     buf = io.BytesIO()
-    im.save(buf, "WEBP", quality=82)
+    im.save(buf, "WEBP", quality=75)
     return "data:image/webp;base64,%s" % base64.b64encode(buf.getvalue()).decode()
 
 
@@ -94,13 +98,17 @@ html = f"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>mwdoa (الموضوعي) — multi-scale marker recovery review</h1>
-<div class="sub">The 20 pages previously excluded from the ayah-bbox asset (no tap
-selection / no highlighting in the app) regenerated with the multi-scale template
-sweep + faded-marker gap fill. Green-bordered cards are untouched control pages.
-Red ellipses = detected end-of-ayah medallions; colored rects = generated per-ayah
-segments (one color per ayah). Pinch-zoom freely; a correct page shows each colored
-rect ending exactly at its red medallion.</div>
+<h1>mwdoa (الموضوعي) — multi-scale recovery + first-ayah head review</h1>
+<div class="sub">Card set 1: the 20 pages previously excluded from the ayah-bbox
+asset (no tap selection / no highlighting in the app), regenerated with the
+multi-scale template sweep + faded-marker gap fill. Card set 2: the 131 pages
+whose FIRST ayah was clipped at the top (the highlight began one or more lines
+too low — user-reported on 160/253; the first ayah now starts at the page's top
+text band). Green-bordered cards are untouched control pages. Red ellipses =
+detected end-of-ayah medallions; colored rects = generated per-ayah segments
+(one color per ayah). Pinch-zoom freely; a correct card shows the FIRST color
+starting at the very top text line, and every rect ending exactly at its red
+medallion.</div>
 {''.join(cards)}
 </body>
 </html>"""
