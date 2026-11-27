@@ -27,6 +27,17 @@ layout, so the classic DB cannot be warped onto it. Instead:
      the marginal FIHRIS (index) column — left on even pages, right on odd
      ones (fihrist_clip_x) — so the ayah highlight never covers the fihris.
 
+Two geometry checks harden the chain (both user-reported via page 373):
+  a. MERGED-LINE SPLIT — the row-ink band detector occasionally fails to
+     separate two adjacent printed lines (their gap rows carry >= threshold
+     ink from descenders/marginal ornaments), merging them into one
+     ~1.5x-height band whose snap lands BETWEEN the lines; over-height
+     bands are split at the emptiest seam row.
+  b. EMPTY-REMAINDER DROP — an ayah's start-band remainder is skipped when
+     the previous marker ends the line: the strip between the column edge
+     and that marker is blank margin (the 0-3px "slivers" previously
+     rendered as stray bars at the page edge).
+
 Pages whose detected marker count != expected ends are flagged and excluded
 from the app asset (graceful fallback there).
 
@@ -139,6 +150,50 @@ def uniform_bands_lh(gray, th=160):
     med = float(np.median(hs))
     raw = [b for b in raw if (b[1] - b[0]) >= 0.45 * med]
     lh = float(np.median([b[1] - b[0] for b in raw]))
+
+    # MERGED-LINE CHECK: a raw band ~1.5x the line height means two (rarely
+    # three) printed lines the row threshold failed to separate — their
+    # inter-line gap rows carried >= threshold ink (descenders of the line
+    # above, marginal ornament columns). The snapped band then lands
+    # BETWEEN the real lines, so every marker in the region is banded
+    # wrongly and the segments sit half on each line (user-reported p373).
+    # Split such bands into round(h/lh) pieces, each seam placed at the
+    # emptiest row (minimum row ink) inside its middle slice; a seam with
+    # no genuine valley (min row ink >= 55% of the band's mean) means the
+    # band is NOT a line pair (e.g. an ornament block) and stays whole.
+    # Bands under the factor are untouched, so clean pages stay
+    # bit-identical to the reviewed asset.
+    SPLIT_FACTOR = 1.35
+    split_raw = []
+    n_splits = 0
+    for (y0, y1) in raw:
+        h = y1 - y0
+        if h <= SPLIT_FACTOR * lh:
+            split_raw.append((y0, y1))
+            continue
+        k = max(2, int(round(h / lh)))
+        mean_d = float(rowd[y0:y1].mean())
+        cuts = [y0]
+        ok = True
+        for j in range(1, k):
+            lo_s = max(y0 + int(h * (j - 0.4) / k), cuts[-1] + int(0.5 * lh))
+            hi_s = min(y0 + int(h * (j + 0.4) / k), y1 - int(0.5 * lh) * (k - j))
+            if hi_s <= lo_s or float(rowd[lo_s:hi_s].min()) >= 0.55 * mean_d:
+                ok = False
+                break
+            cuts.append(lo_s + int(np.argmin(rowd[lo_s:hi_s])))
+        if ok:
+            cuts.append(y1)
+            for i in range(k):
+                split_raw.append((cuts[i], cuts[i + 1]))
+            n_splits += 1
+        else:
+            split_raw.append((y0, y1))
+    raw = split_raw
+    # per-call diagnostic (read by build_page for the review report):
+    # how many raw bands were line-merges that got split.
+    uniform_bands_lh.last_splits = n_splits
+
     bands = [(int(round((y0 + y1) / 2 - lh / 2)), int(round((y0 + y1) / 2 + lh / 2)))
              for (y0, y1) in raw]
     # clamp snapped bands into the image (a merged top band can push < 0)
@@ -466,6 +521,9 @@ def build_page(con, page_no, templates, emit_overlays=False):
         "markers": len(ordered),
         "ending_ayahs": len(ending),
         "bands": len(bands),
+        # recorded for review: how many merged line-pairs the band check
+        # split on this page (0 = classic geometry, bit-identical asset)
+        "bands_split": getattr(uniform_bands_lh, "last_splits", 0),
         # recorded for review: where the fihris clip landed on this page
         "fihris_l": None if clip_l is None else round(clip_l / float(W), 3),
         "fihris_r": None if clip_r is None else round(clip_r / float(W), 3),
@@ -532,7 +590,42 @@ def build_page(con, page_no, templates, emit_overlays=False):
     # like the pale surah-header bands).
     TEXT_LO, TEXT_HI = 0.04, 0.35
     WPL = 9.0
+    # Start-band remainders narrower than this cannot hold a glyph cluster:
+    # they are the blank margin between the text-column edge and a marker
+    # that ENDS the line (the next ayah's text only begins on the following
+    # line). Previously emitted as 0-3px "sliver" segments, they rendered as
+    # stray outlined bars at the page margin (user-reported p373: 26:144/
+    # 147/149) and polluted the hit-testing bands.
+    MIN_REMAINDER_PX = 12
+    # A same-band segment spans [own marker+2, previous marker-2]: two real
+    # medallions are >= ~38px apart (42-66px bodies + gaps), so anything
+    # narrower means the chain holds adjacent/doubled marker detections
+    # (observed 0-9px on pp. 330/446/576/577/581/582) — a stray bar, dropped.
+    MIN_SAMEBAND_PX = 24
+    # A wider remainder with less ink than this is blank margin too: real
+    # text fragments measure 0.08-0.30 ink, empty line-end slack 0.000-0.03
+    # (the medallion's ray/rosette bleed inflates only the marker-adjacent
+    # edge — the CORE window behind a 6px inset is decisively blank).
+    REMAINDER_INK_TH = 0.045
+
+    def start_remainder_is_text(k, x0, x1):
+        """Is the [x0, x1] strip on band k real text (vs. blank margin)?"""
+        if x1 - x0 < MIN_REMAINDER_PX:
+            return False
+        b0, b1 = bands[k]
+        m = (b1 - b0) // 10
+        # core window: inset 6px from the marker side so the medallion's
+        # edge bleed cannot pass empty slack off as text
+        xa, xb = int(x0), int(x1) - 6
+        if xb <= xa:
+            return False
+        reg = gray[b0 + m:b1 - m, xa:xb]
+        if reg.size == 0:
+            return False
+        return float((reg < 160).mean()) >= REMAINDER_INK_TH
+
     segs_by_ayah = {}
+    slivers_dropped = 0
     for idx, ay in enumerate(ending):
         k_end, x_end = ordered[idx][0], ordered[idx][3]
         # this ayah's text sits to the RIGHT of its end marker (RTL)
@@ -557,9 +650,22 @@ def build_page(con, page_no, templates, emit_overlays=False):
             k_start, start_edge = k_prev, x_prev - 2
         segs = []
         if k_end == k_start:
-            segs.append((k_start, mark_edge, start_edge))
+            # Same-band strip between two markers: real text + the own
+            # medallion (>= ~38px); a narrower one is an adjacent/doubled
+            # marker artifact (see MIN_SAMEBAND_PX) — dropped, not boxed.
+            if start_edge - mark_edge >= MIN_SAMEBAND_PX:
+                segs.append((k_start, mark_edge, start_edge))
+            else:
+                slivers_dropped += 1
         else:
-            segs.append((k_start, cx0, start_edge))       # remainder of start band
+            # Remainder of the start band: [cx0, previous marker-2]. Real
+            # text when the previous ayah ended mid-line; EMPTY margin when
+            # its marker ended the line — the degenerate case is dropped by
+            # the emptiness check instead of becoming a sliver segment.
+            if start_remainder_is_text(k_start, cx0, start_edge):
+                segs.append((k_start, cx0, start_edge))
+            else:
+                slivers_dropped += 1
             for k in range(k_start + 1, k_end):           # full intermediate bands
                 segs.append((k, cx0, cx1))
             segs.append((k_end, mark_edge, cx1))          # up to the marker
@@ -604,6 +710,7 @@ def build_page(con, page_no, templates, emit_overlays=False):
 
     out = {"page": page_no, "width": W, "height": H,
            "ayahs": ayahs_out, "info": info}
+    info["slivers_dropped"] = slivers_dropped
 
     if emit_overlays:
         canvas = im.copy()
@@ -671,9 +778,11 @@ def main():
             results.append(out)
         if info.get("count_mismatch") or info.get("error"):
             mismatch.append((pg, info))
-        print("page %3d: markers=%s ending=%s bands=%s%s%s%s"
+        print("page %3d: markers=%s ending=%s bands=%s%s%s%s%s%s"
               % (pg, info.get("markers"), info.get("ending_ayahs"),
                  info.get("bands"),
+                 " SPLIT=%s" % info.get("bands_split") if info.get("bands_split") else "",
+                 " SLV=%s" % info.get("slivers_dropped") if info.get("slivers_dropped") else "",
                  " MULTISCALE" if info.get("multiscale") else "",
                  " GAPFILLED" if info.get("gap_filled") else "",
                  " MISMATCH" if info.get("count_mismatch") else ""))
