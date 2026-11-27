@@ -377,6 +377,41 @@ align with the text bands. Full re-run: same 584/604 pages validated, same
 to `public/assets/ayah-bboxes/mwdoa.json` AND the Android bundle copy
 (`android/app/src/main/assets/public/...`).
 
+**Multi-scale + gap-fill recovery (2026-11-27, user-reported page 242).** The
+20 pages excluded since the first run — **160, 233, 242, 253, 279, 292, 319,
+339, 345, 368, 375, 384, 415, 426, 450, 466, 473, 496, 542, 601** — had no
+ayah selection/highlighting in the app. Root cause: the golden medallion's
+PRINTED SIZE varies across the volume (53x64 px on the template's page 300,
+up to ~66x78 elsewhere, occasionally mixed sizes within one page, e.g.
+601). Against the fixed template those markers score ~0.53 — just under the
+0.55 gate — and the page failed the count validation. A saturation-gate
+probe (sat 38→20) ruled out ink fading as the cause for most of them; the
+remaining ones ARE faded (score 0.35-0.55).
+
+`scripts/generate_ayah_bboxes_mwdoa.py` now runs a two-pass detector:
+
+- **Pass 1** — the classic single-scale match, unchanged. Every page it
+  count-validates is emitted BIT-IDENTICAL to the reviewed asset (an
+  all-multiscale run was tried first and rejected: cross-scale NCC winners
+  shift marker edges ~3 px on hundreds of already-good pages — see
+  `mwdoa_ayah_bboxes_run1_allmultiscale.json` + `mwdoa_multiscale_log.txt`).
+- **Pass 2** — only pages pass 1 cannot validate: a multi-scale template
+  sweep (TEMPLATE_SCALES 0.8-1.3, cross-scale NMS) recovers the different
+  marker sizes (e.g. 242 scores 0.93 at k=1.2); still-short pages get a GAP
+  FILL — the missing faded markers (0.35-0.55) are accepted only inside the
+  reading-order gaps between the trusted anchors and within the text
+  column, so marginal ornaments (surah headers, fihris chips, frame) can
+  never win a slot. This replaces the old blind 0.45 retry, which could
+  seat an ornament in the chain.
+
+Full re-run: **604/604 pages validated, 0 flagged** — the emitted asset adds
+the 20 pages and changes only the 42 pages that previously depended on the
+blind retry (now rebuilt through pass 2); the other 542 pages are
+byte-identical to the previous asset (`validate_mwdoa_multiscale.py`).
+Overlays for all 62 pass-2 pages + controls:
+`research/bbox/render_mwdoa_overlays.py` → `review_mwdoa_multiscale.html`
+(each colored rect should end exactly at its red medallion).
+
 The `temp/bbox-research/mwdoa_*.py` probes document the dead ends (gray and
 color thresholds, isolation tests, self-similarity mining, fragment template
 matching — all failed because the marker is a large faded-gold diamond, not

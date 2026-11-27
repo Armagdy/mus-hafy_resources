@@ -9,7 +9,13 @@ layout, so the classic DB cannot be warped onto it. Instead:
   1. The end-of-ayah sign is an ornate GOLDEN DIAMOND medallion (~53x64 px
      with a dark rosette inside) — confirmed by the user on page 300.
   2. A full-medallion template (cut from the confirmed marker) is matched on
-     every page (gold-hue map, TM_CCOEFF_NORMED, NMS) -> markers.
+     every page (gold-hue map, TM_CCOEFF_NORMED, NMS) -> markers. Pages the
+     classic single-scale pass count-validates are emitted BIT-IDENTICAL to
+     the reviewed asset; only the pages it cannot validate go to pass 2:
+     a multi-scale template sweep (TEMPLATE_SCALES — the medallion's
+     printed size varies across the volume) merged with cross-scale NMS,
+     then a gap fill for faded markers (score 0.35-0.55) restricted to the
+     reading-order gaps between the trusted anchors, within the text column.
   3. mwdoa follows the STANDARD Madani pagination (validated: detected
      marker counts equal the expected ayah ends per page), so the k-th
      marker in reading order (RTL: top band first, right-to-left within a
@@ -39,9 +45,9 @@ from PIL import Image, ImageDraw
 import cv2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-META_PATH = os.path.join(ROOT, "public", "assets", "quran-meta-data.json")
-PAGES_DIR = os.path.join(ROOT, "public", "assets", "mushuf_mwdoa_images")
-CACHE_DIR = os.path.join(ROOT, "temp", "bbox-research")
+META_PATH = os.path.join(ROOT, "assets", "quran-meta-data.json")
+PAGES_DIR = os.path.join(ROOT, "assets", "mushuf_mwdoa_images")
+CACHE_DIR = os.path.join(ROOT, "research", "bbox")
 OUT_PATH = os.path.join(CACHE_DIR, "mwdoa_ayah_bboxes.json")
 
 # the user-confirmed marker on page 300 (row 11, col 8 of the grid diagnostic)
@@ -49,9 +55,24 @@ CONFIRMED = dict(page=300, x=239, y=972, w=53, h=64, pad=8)
 
 # detector parameters (validated on pages 3/50/120/300/400)
 MATCH_THRESHOLD = 0.55
-# second pass for pages whose markers are too faded for the primary pass
-RETRY_THRESHOLD = 0.45
 NMS_PX = 30
+
+# Multi-scale sweep (pass 2): the printed medallion size varies across the
+# volume (53x64 px on the template's page, up to ~66x78 elsewhere,
+# occasionally mixed sizes on one page). The classic single template misses
+# whole pages — NCC collapses to ~0.53, just under the gate (e.g. pages
+# 160/242/253/450). Only pages the classic pass cannot validate get the
+# sweep, so every other page stays bit-identical to the reviewed asset.
+TEMPLATE_SCALES = (0.8, 0.9, 1.0, 1.1, 1.2, 1.3)
+
+# Faded-marker gap fill: some pages carry end-of-ayah medallions printed or
+# scanned too faint for the primary pass (real ones score 0.35-0.55, well
+# above the ornament noise but under the gate). Their positions are
+# constrained to the reading-order GAPS between the trusted anchors and to
+# the text column, so marginal ornaments (surah headers, fihris chips,
+# frame) can never win a slot — and the count gate still validates.
+FILL_POOL_THRESHOLD = 0.30
+FILL_MIN_SCORE = 0.35
 
 
 def ensure_db():
@@ -293,6 +314,7 @@ def gold_map(a, sat_th=38):
 
 
 def detect_markers(gm, tmpl, threshold=MATCH_THRESHOLD):
+    """Classic single-scale detection (the shipped asset's original pass)."""
     res = cv2.matchTemplate(gm, tmpl, cv2.TM_CCOEFF_NORMED)
     loc = np.where(res >= threshold)
     pts = sorted(zip(loc[0], loc[1], res[loc[0], loc[1]]), key=lambda p: -p[2])
@@ -301,6 +323,28 @@ def detect_markers(gm, tmpl, threshold=MATCH_THRESHOLD):
         if all(abs(py - ky) > NMS_PX or abs(px - kx) > NMS_PX for (ky, kx, _) in kept):
             kept.append((int(py), int(px), float(s)))
         if len(kept) >= 60:
+            break
+    return [(py, px, s, 1.0) for (py, px, s) in kept]
+
+
+def detect_markers_multiscale(gm, templates, threshold=MATCH_THRESHOLD):
+    """Sweep every template scale, merge the hits with cross-scale NMS.
+
+    The same physical marker passes at several neighbouring scales; the
+    first (best-scoring) survivor per location wins, so a marker is
+    reported exactly once. Returns (match_y, match_x, score, scale)."""
+    pts = []
+    for k, tk in templates:
+        res = cv2.matchTemplate(gm, tk, cv2.TM_CCOEFF_NORMED)
+        loc = np.where(res >= threshold)
+        for py, px in zip(*loc):
+            pts.append((int(py), int(px), float(res[py, px]), k))
+    pts.sort(key=lambda p: -p[2])
+    kept = []
+    for (py, px, s, k) in pts:
+        if all(abs(py - ky) > NMS_PX or abs(px - kx) > NMS_PX for (ky, kx, _, _) in kept):
+            kept.append((py, px, s, k))
+        if len(kept) >= 200:
             break
     return kept
 
@@ -326,7 +370,7 @@ def db_page_data(con, page_no):
 # ---------------- segment construction ----------------
 
 
-def build_page(con, page_no, tmpl, emit_overlays=False):
+def build_page(con, page_no, templates, emit_overlays=False):
     img_path = os.path.join(PAGES_DIR, "page_%04d.webp" % page_no)
     if not os.path.exists(img_path):
         return None, {"error": "missing image"}
@@ -352,13 +396,13 @@ def build_page(con, page_no, tmpl, emit_overlays=False):
 
     gm = gold_map(a)
     # the template contains a `pad` margin around the marker, so the match
-    # position is offset: the marker's true box starts at (+pad, +pad).
+    # position is offset: the marker's true box starts at (+pad, +pad),
+    # scaled with the template's own scale k.
     pad = CONFIRMED["pad"]
     w_m = CONFIRMED["w"]
 
     # reading order: band index, then right-to-left (x DESCENDING)
-    def band_of(y):
-        c = y + pad + CONFIRMED["h"] / 2.0
+    def band_of_center(c):
         best, bestd = None, None
         for k, (b0, b1) in enumerate(bands):
             if b0 - 0.30 * lh <= c <= b1 + 0.30 * lh:
@@ -372,17 +416,28 @@ def build_page(con, page_no, tmpl, emit_overlays=False):
         return None
 
     def to_ordered(marks):
+        """marks: (match_y, match_x, score, scale) -> reading order
+        (band asc, x desc). Entries carry the marker's TRUE left edge
+        (x + k*pad) and its template scale k."""
         ordered = []
-        for (my, mx, s) in marks:
-            k = band_of(my)
-            if k is None:
+        for (my, mx, s, k) in marks:
+            c = my + k * pad + k * CONFIRMED["h"] / 2.0
+            kb = band_of_center(c)
+            if kb is None:
                 continue
-            # store the marker's TRUE left edge (x + pad)
-            ordered.append((k, -(mx + pad + w_m), my, mx + pad, s))
+            # store the marker's TRUE left edge (x + k*pad)
+            ordered.append((kb, -(mx + k * pad + k * w_m), my, mx + k * pad, s, k))
         ordered.sort()  # band asc, x desc
         return ordered
 
-    ordered = to_ordered(detect_markers(gm, tmpl))
+    # ---- detection ----
+    # Pass 1 — the classic single-scale detector (the template's own scale).
+    # The shipped asset was built with exactly this pass and survived two
+    # human reviews, so every page it count-validates is emitted
+    # BIT-IDENTICAL: cross-scale NCC winners would shift marker edges ~3 px
+    # on hundreds of already-good pages for no visual benefit.
+    tmpl_one = next(tk for k, tk in templates if k == 1.0)
+    ordered = to_ordered(detect_markers(gm, tmpl_one))
 
     groups, nxt = db_page_data(con, page_no)
     if not groups:
@@ -404,20 +459,53 @@ def build_page(con, page_no, tmpl, emit_overlays=False):
         "fihris_l": None if clip_l is None else round(clip_l / float(W), 3),
         "fihris_r": None if clip_r is None else round(clip_r / float(W), 3),
     }
-    # faded markers: retry once at the lower threshold when under-detected
-    if 0 < len(ordered) < len(ending):
-        marks2 = detect_markers(gm, tmpl, threshold=RETRY_THRESHOLD)
-        ordered2 = to_ordered(marks2)
-        if len(ordered2) >= len(ending):
-            ordered = ordered2
-            info["markers"] = len(ordered)
-            info["recovered"] = True
     if len(ordered) > len(ending) and len(ending) > 0:
-        # over-detection: real markers score far higher (0.8+) than
-        # incidental ornament matches — keep the top `ending` by score.
+        # over-detection at the classic scale (as before): real markers
+        # score far higher (0.8+) than incidental ornament matches — keep
+        # the top `ending` by score.
         by_score = sorted(ordered, key=lambda t: -t[4])[:len(ending)]
         ordered = sorted(by_score)
         info["markers_pruned"] = len(ending)
+    if 0 < len(ending) and len(ordered) != len(ending):
+        # Pass 2 — the classic scale cannot validate this page (the
+        # medallions are printed at a different size, or too faded). Sweep
+        # all scales, then complete under-detections with a gap fill: the
+        # missing markers exist but score 0.35-0.55, and are accepted only
+        # inside the reading-order gaps between the trusted anchors and
+        # within the text column — marginal ornaments (surah headers,
+        # fihris chips, frame) can never win a slot.
+        def fill_gaps(anchors):
+            missing = len(ending) - len(anchors)
+            pool = [t for t in to_ordered(detect_markers_multiscale(
+                        gm, templates, FILL_POOL_THRESHOLD))
+                    if FILL_MIN_SCORE <= t[4] < MATCH_THRESHOLD]
+            cands = []
+            for t in pool:
+                kb, xt = t[0], t[3]
+                if not (cx0 - 30 <= xt <= cx1 + 30):
+                    continue          # outside the text column
+                if any(kb == a[0] and abs(xt - a[3]) <= NMS_PX for a in anchors):
+                    continue          # effectively the same spot as an anchor
+                cands.append(t)
+            cands.sort(key=lambda t: -t[4])
+            if len(cands) < missing:
+                return None
+            return sorted(anchors + cands[:missing])
+
+        multi = to_ordered(detect_markers_multiscale(gm, templates))
+        if len(multi) > len(ending):
+            by_score = sorted(multi, key=lambda t: -t[4])[:len(ending)]
+            multi = sorted(by_score)
+            info["markers_pruned"] = len(ending)
+        elif len(multi) < len(ending):
+            filled = fill_gaps(multi)
+            if filled:
+                multi = filled
+                info["gap_filled"] = True
+        if len(multi) == len(ending):
+            ordered = multi
+            info["markers"] = len(ordered)
+            info["multiscale"] = True
     if len(ordered) != len(ending):
         info["count_mismatch"] = True
         return None, info
@@ -496,10 +584,11 @@ def build_page(con, page_no, tmpl, emit_overlays=False):
         dr = ImageDraw.Draw(canvas, "RGBA")
         pal = [(230, 25, 75), (60, 180, 75), (0, 130, 200), (245, 130, 48),
                (145, 30, 180), (70, 240, 240), (240, 50, 230), (210, 245, 60)]
-        for (k, negx, my, mx, s) in ordered:
-            # mx is the marker's TRUE left edge; my needs the pad offset
-            dr.ellipse((mx - 8, my + pad - 8, mx + CONFIRMED["w"] + 8,
-                        my + pad + CONFIRMED["h"] + 8),
+        for (kb, negx, my, tl, s, k) in ordered:
+            # tl is the marker's TRUE left edge; my needs the scaled pad
+            p = k * pad
+            dr.ellipse((tl - 8, my + p - 8, tl + k * CONFIRMED["w"] + 8,
+                        my + p + k * CONFIRMED["h"] + 8),
                        outline=(255, 0, 0), width=3)
         for i, ay in enumerate(ayahs_out):
             col = pal[i % len(pal)]
@@ -522,14 +611,20 @@ def main():
     db = ensure_db()
     con = sqlite3.connect(db)
 
-    # template from the confirmed marker
+    # template from the confirmed marker, swept at several scales: the
+    # printed medallion size varies across the volume
     im = Image.open(os.path.join(
         PAGES_DIR, "page_%04d.webp" % CONFIRMED["page"])).convert("RGB")
     gm = gold_map(np.array(im))
     pad = CONFIRMED["pad"]
     x, y, w, h = CONFIRMED["x"], CONFIRMED["y"], CONFIRMED["w"], CONFIRMED["h"]
     tmpl = gm[max(0, y - pad):y + h + pad, max(0, x - pad):x + w + pad]
-    print("template:", tmpl.shape)
+    templates = []
+    for k in TEMPLATE_SCALES:
+        tk = cv2.resize(tmpl, None, fx=k, fy=k,
+                        interpolation=cv2.INTER_AREA if k < 1.0 else cv2.INTER_LINEAR)
+        templates.append((k, tk))
+        print("template x%.2f: %s" % (k, tk.shape))
 
     if args.all:
         targets = range(1, 605)
@@ -543,16 +638,18 @@ def main():
     mismatch = []
     for pg in targets:
         try:
-            out, info = build_page(con, pg, tmpl, args.overlays)
+            out, info = build_page(con, pg, templates, args.overlays)
         except Exception as e:
             out, info = None, {"error": str(e)}
         if out:
             results.append(out)
         if info.get("count_mismatch") or info.get("error"):
             mismatch.append((pg, info))
-        print("page %3d: markers=%s ending=%s bands=%s%s"
+        print("page %3d: markers=%s ending=%s bands=%s%s%s%s"
               % (pg, info.get("markers"), info.get("ending_ayahs"),
                  info.get("bands"),
+                 " MULTISCALE" if info.get("multiscale") else "",
+                 " GAPFILLED" if info.get("gap_filled") else "",
                  " MISMATCH" if info.get("count_mismatch") else ""))
 
     with open(OUT_PATH, "w", encoding="utf-8") as f:

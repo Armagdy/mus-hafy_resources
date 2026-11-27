@@ -28,8 +28,8 @@ import json
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CACHE_DIR = os.path.join(ROOT, "temp", "bbox-research")
-OUT_DIR = os.path.join(ROOT, "public", "assets", "ayah-bboxes")
+CACHE_DIR = os.path.join(ROOT, "research", "bbox")
+OUT_DIR = os.path.join(ROOT, "assets", "ayah-bboxes")
 
 # madinah's canonical source is the 1421H-based generator (the print is
 # a 1421-family typesetting); the classic-based file stays available via

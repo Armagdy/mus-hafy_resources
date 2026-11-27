@@ -39,10 +39,10 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-META_PATH = os.path.join(ROOT, "public", "assets", "quran-meta-data.json")
+META_PATH = os.path.join(ROOT, "assets", "quran-meta-data.json")
 DB_URL = "https://files.quran.app/hafs/madani/databases/ayahinfo/ayahinfo_1260.zip"
 DB_NAME = "ayahinfo_classic_1260.db"
-CACHE_DIR = os.path.join(ROOT, "temp", "bbox-research")
+CACHE_DIR = os.path.join(ROOT, "research", "bbox")
 
 # Image mushafs that follow the standard Madani 15-line layout (line-for-line
 # match with the classic 1405H reference DB — verified by the line-center fit).
@@ -50,12 +50,12 @@ CACHE_DIR = os.path.join(ROOT, "temp", "bbox-research")
 # the marker-detection pipeline instead.
 LAYOUT_MUSHAFA = {
     "madinah": {
-        "pages_dir": os.path.join(ROOT, "public", "assets", "mushaf_madinah_images"),
+        "pages_dir": os.path.join(ROOT, "assets", "mushaf_madinah_images"),
         "thresh": 205,
         "out": os.path.join(CACHE_DIR, "madinah_ayah_bboxes.json"),
     },
     "tashel": {
-        "pages_dir": os.path.join(ROOT, "public", "assets", "mushaf_tashel_pages"),
+        "pages_dir": os.path.join(ROOT, "assets", "mushaf_tashel_pages"),
         "thresh": 140,
         "out": os.path.join(CACHE_DIR, "tashel_ayah_bboxes.json"),
     },
