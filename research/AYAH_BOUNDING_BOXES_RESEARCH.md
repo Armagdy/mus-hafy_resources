@@ -413,7 +413,7 @@ Overlays for all 62 pass-2 pages + controls:
 (each colored rect should end exactly at its red medallion).
 
 **First-ayah head coverage (2026-11-27, user-reported pages 160/253).** The
-regenerated asset's first ayah was clipped on **77 pages** — all fresh
+regenerated asset's first ayah was clipped on **131 pages** — all fresh
 mid-surah page starts: the first ayah's start band was estimated from its
 on-page word count (`WPL = 9` words per band), but the mwdoa print runs
 ~6-9 words per band, so the estimate undercounted the line span and the
